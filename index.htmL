@@ -1,0 +1,274 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mercado Abierto</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: Arial, sans-serif;
+      background: #f4f6f8; color: #202938;
+    }
+    header {
+      background: #123c69; color: white;
+      padding: 22px 6%; 
+    }
+    header h1 { margin: 0 0 8px; }
+    header p { margin: 0; }
+    main { max-width: 1000px; margin: auto; padding: 20px; }
+    section, .product {
+      background: white; padding: 20px;
+      border-radius: 12px; margin-bottom: 18px;
+      box-shadow: 0 2px 8px #0000000d;
+    }
+    input, select, textarea, button {
+      width: 100%; padding: 12px; margin: 6px 0;
+      border-radius: 7px; border: 1px solid #ccd3dc;
+      font-size: 16px;
+    }
+    button {
+      background: #087f5b; color: white;
+      border: 0; font-weight: bold; cursor: pointer;
+    }
+    button.secondary { background: #123c69; }
+    .products {
+      display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr));
+      gap: 15px;
+    }
+    .price { color: #087f5b; font-size: 20px; font-weight: bold; }
+    .muted { color: #667085; font-size: 14px; }
+    #message { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🛍️ Mercado Abierto</h1>
+  <p>Compra, vende y participa en subastas.</p>
+</header>
+
+<main>
+  <section>
+    <h2>🔎 Buscar anuncios</h2>
+    <input id="search" placeholder="¿Qué producto buscas?">
+    <select id="filter">
+      <option value="">Todas las categorías</option>
+    </select>
+  </section>
+
+  <section>
+    <h2>👤 Tu cuenta</h2>
+    <input id="email" type="email" placeholder="Correo electrónico">
+    <input id="password" type="password" placeholder="Contraseña (mínimo 6 caracteres)">
+    <button onclick="register()">Crear cuenta</button>
+    <button class="secondary" onclick="login()">Iniciar sesión</button>
+    <button class="secondary" onclick="logout()">Cerrar sesión</button>
+    <p id="account" class="muted">No has iniciado sesión.</p>
+  </section>
+
+  <section>
+    <h2>📦 Publicar un anuncio</h2>
+    <p class="muted">Inicia sesión para publicar. Las subastas requieren configuración adicional.</p>
+    <input id="title" placeholder="Nombre del producto">
+    <textarea id="description" placeholder="Describe el producto"></textarea>
+    <select id="category"></select>
+    <select id="type">
+      <option value="fixed_price">Venta a precio fijo</option>
+      <option value="auction">Subasta (configuración pendiente)</option>
+    </select>
+    <input id="price" type="number" min="1" placeholder="Precio en pesos colombianos">
+    <input id="city" placeholder="Ciudad">
+    <input id="whatsapp" placeholder="WhatsApp con indicativo, por ejemplo 573001234567">
+    <button onclick="publishListing()">Publicar anuncio</button>
+    <p id="message"></p>
+  </section>
+
+  <h2>🛒 Anuncios publicados</h2>
+  <div id="products" class="products"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = "PEGA_AQUI_TU_PROJECT_URL";
+const SUPABASE_KEY = "PEGA_AQUI_TU_PUBLISHABLE_KEY";
+
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser = null;
+let categories = [];
+
+function message(text) {
+  document.getElementById("message").textContent = text;
+}
+
+async function register() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  if (!email || password.length < 6) {
+    return message("Escribe un correo válido y una contraseña de al menos 6 caracteres.");
+  }
+  const { data, error } = await db.auth.signUp({
+    email, password,
+    options: { data: { display_name: email.split("@")[0] } }
+  });
+  if (error) return message(error.message);
+  message(data.session
+    ? "Cuenta creada. Ya puedes iniciar sesión."
+    : "Solicitud enviada. Revisa tu correo para confirmar la cuenta.");
+}
+
+async function login() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const { error } = await db.auth.signInWithPassword({ email, password });
+  if (error) return message(error.message);
+  message("Sesión iniciada.");
+  await refreshUser();
+}
+
+async function logout() {
+  const { error } = await db.auth.signOut();
+  if (error) return message(error.message);
+  await refreshUser();
+  message("Sesión cerrada.");
+}
+
+async function refreshUser() {
+  const { data } = await db.auth.getUser();
+  currentUser = data.user;
+  document.getElementById("account").textContent = currentUser
+    ? "Sesión iniciada: " + currentUser.email
+    : "No has iniciado sesión.";
+}
+
+async function loadCategories() {
+  const { data, error } = await db.from("categories")
+    .select("id,name").eq("active", true).order("name");
+  if (error) return message("No se pudieron cargar las categorías: " + error.message);
+  categories = data || [];
+  for (const id of ["category", "filter"]) {
+    const select = document.getElementById(id);
+    if (id === "category") select.innerHTML = "";
+    for (const cat of categories) {
+      const option = document.createElement("option");
+      option.value = cat.id;
+      option.textContent = cat.name;
+      select.appendChild(option);
+    }
+  }
+  document.getElementById("filter").insertAdjacentHTML(
+    "afterbegin", '<option value="">Todas las categorías</option>'
+  );
+}
+
+async function loadListings() {
+  const { data, error } = await db.from("listings")
+    .select("id,title,description,price_cop,city,whatsapp,listing_type,category_id")
+    .eq("status", "published").order("created_at", { ascending: false });
+  const container = document.getElementById("products");
+  container.replaceChildren();
+  if (error) {
+    container.textContent = "No se pudieron cargar los anuncios.";
+    return;
+  }
+
+  const term = document.getElementById("search").value.toLowerCase();
+  const categoryId = document.getElementById("filter").value;
+  const shown = (data || []).filter(item =>
+    (item.title + " " + item.description).toLowerCase().includes(term) &&
+    (!categoryId || String(item.category_id) === categoryId)
+  );
+
+  if (!shown.length) {
+    container.textContent = "Todavía no hay anuncios que coincidan.";
+    return;
+  }
+
+  for (const item of shown) {
+    const card = document.createElement("article");
+    card.className = "product";
+    const title = document.createElement("h3");
+    title.textContent = item.title;
+    const description = document.createElement("p");
+    description.textContent = item.description;
+    const price = document.createElement("p");
+    price.className = "price";
+    price.textContent = "$" + Number(item.price_cop).toLocaleString("es-CO") + " COP";
+    const city = document.createElement("p");
+    city.className = "muted";
+    city.textContent = item.city || "Colombia";
+    const type = document.createElement("p");
+    type.textContent = item.listing_type === "auction"
+      ? "Subasta — ofertas aún no habilitadas"
+      : "Venta directa";
+    card.append(title, description, price, city, type);
+
+    if (item.whatsapp) {
+      const phone = item.whatsapp.replace(/\D/g, "");
+      if (phone.length >= 10 && phone.length <= 15) {
+        const link = document.createElement("a");
+        link.href = "https://wa.me/" + phone;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Contactar por WhatsApp";
+        card.appendChild(link);
+      }
+    }
+    container.appendChild(card);
+  }
+}
+
+async function publishListing() {
+  message("");
+  if (!currentUser) return message("Primero debes iniciar sesión.");
+  const type = document.getElementById("type").value;
+  if (type === "auction") {
+    return message("Las subastas todavía no están habilitadas para publicar. Primero protegeremos el sistema de ofertas.");
+  }
+
+  const title = document.getElementById("title").value.trim();
+  const description = document.getElementById("description").value.trim();
+  const category_id = Number(document.getElementById("category").value);
+  const price_cop = Number(document.getElementById("price").value);
+  const city = document.getElementById("city").value.trim();
+  const whatsapp = document.getElementById("whatsapp").value.replace(/\D/g, "");
+
+  if (title.length < 5 || description.length < 10 ||
+      !category_id || !Number.isSafeInteger(price_cop) || price_cop <= 0) {
+    return message("Completa el título (mínimo 5 caracteres), descripción (mínimo 10), categoría y precio.");
+  }
+  if (whatsapp && (whatsapp.length < 10 || whatsapp.length > 15)) {
+    return message("Revisa el número de WhatsApp e incluye el indicativo del país.");
+  }
+
+  const { error } = await db.from("listings").insert({
+    seller_id: currentUser.id, category_id, title, description,
+    listing_type: "fixed_price", price_cop, city, whatsapp, status: "published"
+  });
+  if (error) return message("No se pudo publicar: " + error.message);
+  message("Anuncio publicado.");
+  for (const id of ["title","description","price","city","whatsapp"]) {
+    document.getElementById(id).value = "";
+  }
+  await loadListings();
+}
+
+document.getElementById("search").addEventListener("input", loadListings);
+document.getElementById("filter").addEventListener("change", loadListings);
+
+async function start() {
+  if (SUPABASE_URL.startsWith("PEGA_AQUI") ||
+      SUPABASE_KEY.startsWith("PEGA_AQUI")) {
+    message("Falta configurar la conexión con Supabase.");
+    return;
+  }
+  await refreshUser();
+  await loadCategories();
+  await loadListings();
+  db.auth.onAuthStateChange(() => refreshUser());
+}
+
+start();
+</script>
+</body>
+</html>
